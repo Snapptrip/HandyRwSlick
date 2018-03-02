@@ -4,6 +4,7 @@ Write slick queries with cats.data.EitherT[Future, DatabaseError, R] (R being re
 # Why?
 In Snapptrip.com, we were doing pretty cool stuffs:
 1. Scaling postgreSQL database by dividing database queries into multiple forms of actions and having READ queries in replication databases.
+http://danielwestheide.com/blog/2015/06/28/put-your-writes-where-your-master-is-compile-time-restriction-of-slick-effect-types.html
 2. A nicer error handling.
 
 # How?
@@ -63,7 +64,7 @@ Using EitherT and stacking Either and Future (http://eed3si9n.com/herding-cats/m
     }
   }
 ```
-And you can use the queries with `userRepo.findBy(1).fValueOr` in order to run the database action and
+And you can use the queries with `userRepo.findBy(1).runQuery` in order to run the database action and
 it will either is going to get complete or will return an error which has the reason and the line it was caused.
 
 # License

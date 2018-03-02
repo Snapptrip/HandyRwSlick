@@ -2,11 +2,12 @@ import org.scalatest._
 import RwSlick.QueryHelper._
 import RwSlick._
 import Samples.Coffee
+import cats.data.EitherT
 import org.scalatest.mockito.MockitoSugar
 import org.mockito.ArgumentMatchers.any
 import org.mockito.Mockito._
 
-import scala.concurrent.{Future}
+import scala.concurrent.{ExecutionContext, Future}
 
 class ExampleSpec extends AsyncFlatSpec with MockitoSugar {
   implicit val db: ReadWriteDB = mock[ReadWriteDB]
@@ -67,7 +68,7 @@ class ExampleSpec extends AsyncFlatSpec with MockitoSugar {
     }
   }
 
-  "fValueOr in HandyQueries" should "return Right if DB works" in {
+  "runQuery in HandyQueries" should "return Right if DB works" in {
     import cats.implicits._
     implicit val db: ReadWriteDB = mock[ReadWriteDB]
     when(db.runReplica(Samples.readAction)) thenReturn Future.successful(Coffee(name = "it works", price = 666))
@@ -76,13 +77,13 @@ class ExampleSpec extends AsyncFlatSpec with MockitoSugar {
       toQuery(Samples.readAction)
     }
 
-    handyQuery.fValueOr.map(_.name).getOrElse("it doesn't work") map { v =>
+    handyQuery.runQuery.map(_.name).getOrElse("it doesn't work") map { v =>
       assert(v == "it works")
       assert(v != "it doesn't work")
     }
   }
 
-  "fValueOr in HandyQueries for $query.head" should "be Left with NotFound if DB the returned sequence is empty" in {
+  "runQuery in HandyQueries for $query.head" should "be Left with NotFound if DB the returned sequence is empty" in {
     implicit val db: ReadWriteDB = mock[ReadWriteDB]
     when(db.runReplica(Samples.readAction)) thenReturn Future.failed(new java.util.NoSuchElementException)
 
@@ -90,7 +91,7 @@ class ExampleSpec extends AsyncFlatSpec with MockitoSugar {
       toQuery(Samples.readAction)
     }
 
-    handyQuery.fValueOr.value.map {
+    handyQuery.runQuery.value.map {
       case Left(q @ NotFound(_)) =>
         assert(q.toString.contains("/src/test/scala/tests.scala"))
 
@@ -98,7 +99,7 @@ class ExampleSpec extends AsyncFlatSpec with MockitoSugar {
     }
   }
 
-  "fValueOr in HandyQueries for unknown exceptions" should "return Left with QueryError" in {
+  "runQuery in HandyQueries for unknown exceptions" should "return Left with QueryError" in {
     implicit val db: ReadWriteDB = mock[ReadWriteDB]
     when(db.runReplica(Samples.readAction)) thenReturn Future.failed(new Exception("hello world!"))
 
@@ -106,9 +107,75 @@ class ExampleSpec extends AsyncFlatSpec with MockitoSugar {
       toQuery(Samples.readAction)
     }
 
-    handyQuery.fValueOr.value.map {
+    handyQuery.runQuery.value.map {
       case Left(QueryError(_, _)) => assert(true)
       case _                      => assert(false)
+    }
+  }
+
+  "fValueOr in HandyQueries" should "be usable with other Errors" in {
+    import cats.implicits._
+
+    trait MyBaseError
+    case class DbError(error: RwSlick.BaseError) extends MyBaseError
+
+    type AsyncResultT[R] = EitherT[Future, MyBaseError, R]
+    val f: Future[Unit] = Future.successful(())
+
+    import scala.concurrent.Future
+
+    val eitherTee: AsyncResultT[Unit] = EitherT.liftF[Future, MyBaseError, Unit](f)
+
+    implicit val db: ReadWriteDB = mock[ReadWriteDB]
+    when(db.runReplica(Samples.readAction)) thenReturn Future.failed(new Exception("hello world!"))
+
+    val handyQuery = {
+      toQuery(Samples.readAction)
+    }
+
+    implicit class queryWrapper[T](val query: HandyQuery[T]) extends QueryWrapper[T] {
+      override type ReturnType = MyBaseError
+      override def dbError(error: BaseError): MyBaseError = DbError(error)
+    }
+
+    val w = for {
+      y <- eitherTee
+      x <- handyQuery.fValueOr //line 144 for tests
+    } yield ()
+
+    val z = for {
+      x <- handyQuery.fValueOr
+      y <- eitherTee
+    } yield ()
+
+    (for {
+      x <- w
+      y <- z
+    } yield ()).value map {
+      case Left(DbError(e)) => assert(e.toString.contains("tests.scala:143"))
+      case _                => assert(false)
+    }
+  }
+
+  "fValueOr" should "return the defined type in the HandyQuery" in {
+    import cats.implicits._
+
+    trait MyBaseError
+    case class DbError(error: RwSlick.BaseError) extends MyBaseError
+
+    implicit val db: ReadWriteDB = mock[ReadWriteDB]
+    when(db.runReplica(Samples.readAction)) thenReturn Future.successful(Coffee(name = "it works", price = 666))
+
+    val handyQuery = toQuery(Samples.readAction)
+
+    implicit class queryWrapper[T](val query: HandyQuery[T]) extends QueryWrapper[T] {
+      override type ReturnType = MyBaseError
+      override def dbError(error: BaseError): MyBaseError = DbError(error)
+    }
+
+    handyQuery.fValueOr.value map {
+      case Right(e) => assert(e.price == 666)
+      case _        => assert(false)
     }
   }
 }
